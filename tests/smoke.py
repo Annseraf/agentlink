@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ADMIN = "admin@example.invalid"
 OTHER_ADMIN = "second@example.invalid"
 MEMBER = "member@example.invalid"
+BUILD_TIMEOUT = 1800
 
 
 class Setup:
@@ -43,8 +44,8 @@ class Setup:
         os.close(self.master)
         os.waitpid(self.pid, 0)
 
-    def expect(self, pattern):
-        deadline = time.monotonic() + 600
+    def expect(self, pattern, *, timeout=30):
+        deadline = time.monotonic() + timeout
         while not (match := re.search(pattern, self.output)):
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([self.master], [], [], remaining)[0]:
@@ -118,7 +119,7 @@ def exercise(port, state):
     member_initial, member_password, reset_password = (secrets.token_hex(20) for _ in range(3))
     other_initial, other_password = (secrets.token_hex(20) for _ in range(2))
     with Setup(state, port) as setup:
-        setup.expect(rb"Initial admin email: ")
+        setup.expect(rb"Initial admin email: ", timeout=BUILD_TIMEOUT)
         setup.type(ADMIN)
         setup.expect(rb"Temporary admin password \(Enter to generate\): ")
         setup.type("", secret=True)
@@ -166,7 +167,7 @@ def exercise(port, state):
         other_cookie = login(port, OTHER_ADMIN, other_password)
 
     with Setup(state, port) as setup:
-        setup.expect(rb"Existing AgentLink accounts retained\.")
+        setup.expect(rb"Existing AgentLink accounts retained\.", timeout=BUILD_TIMEOUT)
         setup.expect(rb"listening at http://127\.0\.0\.1:")
         request(port, "/api/session", 200, cookie=admin)
         _, _, body = request(port, "/api/people", 200, cookie=admin)
@@ -198,7 +199,7 @@ def main():
             port = sock.getsockname()[1]
         initial = exercise(port, Path(scratch) / "first")
         with Setup(Path(scratch) / "second", port) as setup:
-            setup.expect(rb"Initial admin email: ")
+            setup.expect(rb"Initial admin email: ", timeout=BUILD_TIMEOUT)
             setup.type(ADMIN)
             setup.expect(rb"Temporary admin password \(Enter to generate\): ")
             setup.type("", secret=True)
@@ -208,7 +209,7 @@ def main():
             login(port, ADMIN, second)
         with Setup(Path(scratch) / "supplied", port) as setup:
             supplied = secrets.token_hex(20)
-            setup.expect(rb"Initial admin email: ")
+            setup.expect(rb"Initial admin email: ", timeout=BUILD_TIMEOUT)
             setup.type(ADMIN)
             setup.expect(rb"Temporary admin password \(Enter to generate\): ")
             setup.type(supplied, secret=True)

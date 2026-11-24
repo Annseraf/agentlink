@@ -1,0 +1,21 @@
+[package]
+name = "agentlink"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+argon2 = "0.5"
+axum = "0.8"
+getrandom = "0.2"
+hex = "0.4"
+rpassword = "7"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+
+# The bundled SQLite C build otherwise dominates first setup on small ARM hosts.
+[profile.release.package.libsqlite3-sys]
+opt-level = 1

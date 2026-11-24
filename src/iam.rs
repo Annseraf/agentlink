@@ -1,6 +1,8 @@
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::http::StatusCode;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -79,12 +81,15 @@ pub struct PasswordChange {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AccessChange {
     Disable,
+    Enable { password: String },
     RevokeSessions,
     ResetPassword { password: String },
 }
 
-pub fn open(path: &Path) -> Result<Connection> {
-    let db = Connection::open(path)?;
+pub fn open(path: &Path, create: bool) -> Result<Connection> {
+    let mut flags = OpenFlags::default();
+    flags.set(OpenFlags::SQLITE_OPEN_CREATE, create);
+    let db = Connection::open_with_flags(path, flags)?;
     db.busy_timeout(std::time::Duration::from_secs(5))?;
     db.execute_batch(
         "PRAGMA foreign_keys = ON;
@@ -351,6 +356,51 @@ pub fn add_user(db: &mut Connection, token: &str, input: NewUser) -> Result<User
     })
 }
 
+fn set_temporary_password(db: &Connection, id: i64, password: &str) -> Result<()> {
+    validate_password(password)?;
+    let existing: String = db.query_row(
+        "SELECT password_hash FROM users WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    if verify(password, &existing)? {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Choose a different temporary password.",
+        ));
+    }
+    db.execute(
+        "UPDATE users SET password_hash = ?1, must_change = 1 WHERE id = ?2",
+        params![hash_password(password)?, id],
+    )?;
+    Ok(())
+}
+
+pub fn recovery_admin(db: &Connection, email: &str) -> Result<i64> {
+    db.query_row(
+        "SELECT id FROM users WHERE email = ?1 AND role = 'admin' AND active = 1",
+        [normalize_email(email)?],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or(Error(
+        StatusCode::NOT_FOUND,
+        "No active administrator has that email.",
+    ))
+}
+
+pub fn reset_admin(db: &mut Connection, email: &str, password: &str) -> Result<()> {
+    let tx = write(db)?;
+    let id = recovery_admin(&tx, email)?;
+    set_temporary_password(&tx, id, password)?;
+    revoke(&tx, id)?;
+    // The terminal operator has no account ID. This action identifies the
+    // recovered account and distinguishes terminal recovery from an IAM reset.
+    audit(&tx, id, id, "local_admin_recovery")?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn change_access(
     db: &mut Connection,
     token: &str,
@@ -365,7 +415,7 @@ pub fn change_access(
         })
         .optional()?
         .ok_or(Error(StatusCode::NOT_FOUND, "Account not found."))?;
-    if !active {
+    if !active && !matches!(change, AccessChange::Enable { .. }) {
         return Err(Error(
             StatusCode::CONFLICT,
             "This account is already disabled.",
@@ -390,22 +440,19 @@ pub fn change_access(
             "disable"
         }
         AccessChange::RevokeSessions => "revoke_sessions",
-        AccessChange::ResetPassword { password } => {
-            validate_password(&password)?;
-            let existing: String =
-                tx.query_row("SELECT password_hash FROM users WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })?;
-            if verify(&password, &existing)? {
+        AccessChange::Enable { password } => {
+            if active {
                 return Err(Error(
-                    StatusCode::BAD_REQUEST,
-                    "Choose a different temporary password.",
+                    StatusCode::CONFLICT,
+                    "This account already has access.",
                 ));
             }
-            tx.execute(
-                "UPDATE users SET password_hash = ?1, must_change = 1 WHERE id = ?2",
-                params![hash_password(&password)?, id],
-            )?;
+            set_temporary_password(&tx, id, &password)?;
+            tx.execute("UPDATE users SET active = 1 WHERE id = ?1", [id])?;
+            "enable"
+        }
+        AccessChange::ResetPassword { password } => {
+            set_temporary_password(&tx, id, &password)?;
             "reset_password"
         }
     };

@@ -76,9 +76,9 @@ function accessButton(person, action, title, description) {
     el("confirm-button").textContent = title;
     el("confirm-form").reset();
     notice("confirm-error");
-    const reset = action === "reset_password";
-    el("reset-field").hidden = !reset;
-    el("confirm-form").elements.password.required = reset;
+    const needsPassword = action === "reset_password" || action === "enable";
+    el("reset-field").hidden = !needsPassword;
+    el("confirm-form").elements.password.required = needsPassword;
     el("confirm").showModal();
   });
   return button;
@@ -96,16 +96,21 @@ async function loadPeople() {
     const state = person.active ? "Active" : "Access removed";
     details.textContent = `${role} · ${state}${person.active && person.must_change ? " · Password change required" : ""}`;
     row.append(heading, details);
+    const actions = document.createElement("div");
+    actions.className = "actions";
     if (person.active) {
-      const actions = document.createElement("div");
-      actions.className = "actions";
       actions.append(
         accessButton(person, "revoke_sessions", "Revoke sessions", "Sign this person out everywhere. They can sign in again with their current password."),
         accessButton(person, "reset_password", "Reset password", "Sign this person out and replace their password. Give them the temporary password privately."),
         accessButton(person, "disable", "Remove access", "Sign this person out and block future sign-ins.")
       );
-      row.append(actions);
+    } else {
+      actions.append(accessButton(
+        person, "enable", "Restore access",
+        "Restore this person's role and sign-in access. Give them the new temporary password privately."
+      ));
     }
+    row.append(actions);
     return row;
   });
   el("accounts").replaceChildren(...rows);

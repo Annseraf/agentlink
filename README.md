@@ -43,7 +43,10 @@ HTTP and has no public ingress or TLS configuration.
 ## People and sessions
 
 An Admin can add people as Members or Admins, reset passwords, revoke sessions,
-and remove access. New and reset accounts must change their temporary password.
+and remove or restore access. To restore access, open People and select
+**Restore access** on the disabled account. Set a new temporary password and
+share it privately. Restoring access keeps the original account and its role.
+New, reset, and restored accounts must change their temporary password.
 Share temporary passwords privately. Members can use their own account.
 A removed account remains in the local database for audit references, and a
 transaction prevents removal of the last active Admin.
@@ -52,6 +55,23 @@ Passwords are stored as salted Argon2id hashes. The server stores digests of
 opaque session tokens. Sessions expire after 12 hours. Password changes, admin
 resets and access removal revoke all sessions for the affected person. Account
 change events record the operator, target, action and time in SQLite.
+
+### Recover a lost administrator password
+
+From the AgentLink checkout, open an interactive terminal as the installation's
+operating system user. Use the same `AGENTLINK_STATE_DIR` as your running
+installation if you set a custom path.
+
+```sh
+./setup.sh reset-admin admin@example.invalid
+```
+
+Replace the example email with your active admin's address. Enter and confirm
+a new temporary password at the hidden prompts. Sign in with it and choose
+a permanent password. Recovery works while the service is running, including
+when this is the only active admin. It revokes that account's existing sessions
+and keeps the database, other accounts, and their sessions. SQLite records a
+terminal recovery event against the recovered account.
 
 ## Verify locally
 
@@ -66,8 +86,8 @@ python3 tests/smoke.py
 ```
 
 The test checks first sign-in and password change, repeat setup, role enforcement,
-session invalidation after revocation, password reset, access removal and
-concurrent protection of the last active admin. For a manual dashboard pass,
+session invalidation after revocation, password reset, access removal and restoration,
+terminal-only admin recovery, and concurrent protection of the last active admin. For a manual dashboard pass,
 sign in, change the initial password, and use People to create a Member with a
 disposable local credential. Sign in as that Member in a separate browser
 profile, then revoke their sessions from the Admin profile.

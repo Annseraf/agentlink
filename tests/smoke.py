@@ -13,6 +13,7 @@ import select
 import signal
 import socket
 import sqlite3
+import subprocess
 import tempfile
 import termios
 import time
@@ -25,24 +26,31 @@ BUILD_TIMEOUT = 1800
 
 
 class Setup:
-    def __init__(self, state, port):
+    def __init__(self, state, port, *args):
         self.pid, self.master = pty.fork()
         if self.pid == 0:
             os.chdir(ROOT)
             os.environ.update(AGENTLINK_STATE_DIR=str(state), AGENTLINK_PORT=str(port))
-            os.execv("./setup.sh", ["./setup.sh"])
+            os.execv("./setup.sh", ["./setup.sh", *args])
         self.output = b""
 
     def __enter__(self):
         return self
 
     def __exit__(self, *_):
+        os.close(self.master)
+        if self.pid is None:
+            return
         try:
             os.kill(self.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        os.close(self.master)
         os.waitpid(self.pid, 0)
+
+    def expect_exit(self, expected):
+        _, status = os.waitpid(self.pid, 0)
+        self.pid = None
+        assert os.waitstatus_to_exitcode(status) == expected
 
     def expect(self, pattern, *, timeout=30):
         deadline = time.monotonic() + timeout
@@ -114,6 +122,43 @@ def access(port, admin, person, action, status, **fields):
                    cookie=admin, data={"action": action, **fields})[0]
 
 
+def recover_admin(port, state, old_cookie, old_password, member_cookie, admin_id):
+    local_env = dict(os.environ, AGENTLINK_STATE_DIR=str(state))
+    detached = subprocess.run(
+        ["./setup.sh", "reset-admin", ADMIN], cwd=ROOT, env=local_env,
+        start_new_session=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+    )
+    assert detached.returncode == 1
+    assert b"requires an interactive terminal" in detached.stderr
+    request(port, "/api/session", 200, cookie=old_cookie)
+
+    with Setup(state, port, "reset-admin", MEMBER) as denied:
+        denied.expect(rb"No active administrator has that email.")
+        denied.expect_exit(1)
+    request(port, "/api/session", 200, cookie=member_cookie)
+
+    temporary, permanent = (secrets.token_hex(20) for _ in range(2))
+    with Setup(state, port, "reset-admin", ADMIN.upper()) as recovery:
+        recovery.expect(rb"New temporary admin password: ")
+        recovery.type(temporary, secret=True)
+        prompt = recovery.expect(rb"Confirm temporary admin password: ").string
+        assert temporary.encode() not in prompt
+        recovery.type(temporary, secret=True)
+        output = recovery.expect(rb"Admin password reset\. Previous sessions revoked\.").string
+        assert temporary.encode() not in output
+        recovery.expect_exit(0)
+
+    request(port, "/api/session", 401, cookie=old_cookie)
+    request(port, "/api/session", 200, cookie=member_cookie)
+    login(port, ADMIN, old_password, 401)
+    recovered = login(port, ADMIN, temporary)
+    _, _, body = request(port, "/api/session", 200, cookie=recovered)
+    assert json.loads(body)["id"] == admin_id
+    request(port, "/api/people", 403, cookie=recovered)
+    change_password(port, recovered, temporary, permanent)
+    return login(port, ADMIN, permanent)
+
+
 def exercise(port, state):
     admin_password = secrets.token_hex(20)
     member_initial, member_password, reset_password = (secrets.token_hex(20) for _ in range(3))
@@ -151,6 +196,7 @@ def exercise(port, state):
         request(port, "/api/people", 403, cookie=member_cookie)
         add(port, member_cookie, "blocked@example.invalid", member_initial, "admin", 403)
         access(port, member_cookie, primary, "disable", 403)
+        access(port, member_cookie, primary, "enable", 403, password=member_initial)
         access(port, admin, member, "revoke_sessions", 204)
         request(port, "/api/session", 401, cookie=member_cookie)
         member_cookie = login(port, MEMBER, member_password)
@@ -161,6 +207,22 @@ def exercise(port, state):
         access(port, admin, member, "disable", 204)
         request(port, "/api/session", 401, cookie=member_cookie)
         login(port, MEMBER, reset_password, 401)
+        access(port, member_cookie, member, "enable", 401, password=member_initial)
+        access(port, admin, member, "enable", 400, password=reset_password)
+        restored_password = secrets.token_hex(20)
+        access(port, admin, member, "enable", 204, password=restored_password)
+        access(port, admin, member, "enable", 409, password=member_initial)
+        request(port, "/api/session", 401, cookie=member_cookie)
+        login(port, MEMBER, reset_password, 401)
+        restored = login(port, MEMBER, restored_password)
+        _, _, body = request(port, "/api/session", 200, cookie=restored)
+        restored_profile = json.loads(body)
+        assert restored_profile["id"] == member["id"]
+        assert restored_profile["role"] == "member" and restored_profile["must_change"]
+        change_password(port, restored, restored_password, member_password)
+        restored = login(port, MEMBER, member_password)
+        admin = recover_admin(port, state, admin, admin_password, restored, primary["id"])
+        access(port, admin, primary, "disable", 409)
         other = add(port, admin, OTHER_ADMIN, other_initial, "admin")
         other_cookie = login(port, OTHER_ADMIN, other_initial)
         change_password(port, other_cookie, other_initial, other_password)
@@ -172,6 +234,7 @@ def exercise(port, state):
         request(port, "/api/session", 200, cookie=admin)
         _, _, body = request(port, "/api/people", 200, cookie=admin)
         assert len(json.loads(body)) == 3
+        request(port, "/api/session", 200, cookie=restored)
         login(port, MEMBER, reset_password, 401)
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             first = pool.submit(access, port, admin, other, "disable", (204, 401))
@@ -189,6 +252,10 @@ def exercise(port, state):
                 "SELECT EXISTS(SELECT 1 FROM sessions WHERE digest = ?)", (admin_digest,)
             ).fetchone() == (int(first.result() == 204),)
             assert db.execute("SELECT count(*) FROM account_events WHERE action='disable'").fetchone() == (2,)
+            for action, subject in [("enable", member), ("local_admin_recovery", primary)]:
+                assert db.execute(
+                    "SELECT actor_id, subject_id FROM account_events WHERE action=?", (action,),
+                ).fetchall() == [(primary["id"], subject["id"])]
     return initial
 
 
@@ -219,7 +286,7 @@ def main():
             output = setup.expect(rb"listening at http://127\.0\.0\.1:").string
             assert supplied.encode() not in output
             login(port, ADMIN, supplied)
-    print("PASS: fresh and repeat native setup, per-install credential, IAM enforcement and concurrent admin protection")
+    print("PASS: fresh and repeat native setup, IAM enforcement, access restoration, terminal admin recovery and concurrent admin protection")
 
 
 if __name__ == "__main__":

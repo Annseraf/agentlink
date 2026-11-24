@@ -229,13 +229,15 @@ fn router(app: App) -> Router {
         .with_state(app)
 }
 
-fn database_path() -> std::io::Result<PathBuf> {
+fn database_path(create: bool) -> std::io::Result<PathBuf> {
     let path =
         PathBuf::from(env::var_os("AGENTLINK_STATE_DIR").unwrap_or_else(|| ".agentlink".into()));
-    match fs::DirBuilder::new().mode(0o700).create(&path) {
-        Ok(()) => (),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-        Err(e) => return Err(e),
+    if create {
+        match fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(e),
+        }
     }
     let metadata = fs::symlink_metadata(&path)?;
     if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
@@ -244,12 +246,35 @@ fn database_path() -> std::io::Result<PathBuf> {
         ));
     }
     let db = path.join("agentlink.sqlite3");
-    if fs::symlink_metadata(&db).is_ok_and(|m| !m.is_file()) {
-        return Err(std::io::Error::other(
-            "State database must be a regular file.",
-        ));
+    match fs::symlink_metadata(&db) {
+        Ok(metadata) if metadata.is_file() => (),
+        Err(e) if create && e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e),
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "State database must be a regular file.",
+            ));
+        }
     }
     Ok(db)
+}
+
+fn terminal() -> Result<fs::File, String> {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(FsPath::new("/dev/tty"))
+        .map_err(|_| "This operation requires an interactive terminal.".into())
+}
+
+fn confirm_temporary_password(password: &str) -> Result<(), String> {
+    iam::validate_password(password).map_err(|error| error.1)?;
+    let confirmation = rpassword::prompt_password("Confirm temporary admin password: ")
+        .map_err(|e| e.to_string())?;
+    if password != confirmation {
+        return Err("Passwords differ. Run the command again.".into());
+    }
+    Ok(())
 }
 
 fn prompt_bootstrap(db: &mut Connection) -> Result<(), String> {
@@ -257,11 +282,7 @@ fn prompt_bootstrap(db: &mut Connection) -> Result<(), String> {
         println!("Existing AgentLink accounts retained.");
         return Ok(());
     }
-    let mut terminal = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(FsPath::new("/dev/tty"))
-        .map_err(|_| "Run first setup from an interactive terminal.")?;
+    let mut terminal = terminal()?;
     write!(terminal, "Initial admin email: ").map_err(|e| e.to_string())?;
     let mut email = String::new();
     BufReader::new(&terminal)
@@ -274,13 +295,7 @@ fn prompt_bootstrap(db: &mut Connection) -> Result<(), String> {
     let password = if generated {
         iam::random_token().map_err(|error| error.1)?
     } else {
-        iam::validate_password(&supplied).map_err(|error| error.1)?;
-        if supplied
-            != rpassword::prompt_password("Confirm temporary admin password: ")
-                .map_err(|e| e.to_string())?
-        {
-            return Err("Passwords differ. Run setup again.".into());
-        }
+        confirm_temporary_password(&supplied)?;
         supplied
     };
     if iam::bootstrap(db, &email, &password).map_err(|error| error.1)? {
@@ -296,14 +311,32 @@ fn prompt_bootstrap(db: &mut Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn prompt_reset_admin(email: &str) -> Result<(), String> {
+    let _terminal = terminal()?;
+    let path =
+        database_path(false).map_err(|e| format!("Cannot open existing AgentLink state: {e}"))?;
+    let mut db = iam::open(&path, false).map_err(|error| error.1)?;
+    iam::recovery_admin(&db, email).map_err(|error| error.1)?;
+    let password =
+        rpassword::prompt_password("New temporary admin password: ").map_err(|e| e.to_string())?;
+    confirm_temporary_password(&password)?;
+    iam::reset_admin(&mut db, email, &password).map_err(|error| error.1)?;
+    println!(
+        "Admin password reset. Previous sessions revoked. Change the temporary password at sign-in."
+    );
+    Ok(())
+}
+
 async fn run() -> Result<(), String> {
-    let command = env::args()
-        .nth(1)
-        .filter(|v| matches!(v.as_str(), "bootstrap" | "serve"))
-        .filter(|_| env::args_os().len() == 2)
-        .ok_or("Usage: agentlink bootstrap|serve")?;
-    let path = database_path().map_err(|e| e.to_string())?;
-    let mut db = iam::open(&path).map_err(|error| error.1)?;
+    let mut args = env::args().skip(1);
+    let command = match (args.next().as_deref(), args.next(), args.next()) {
+        (Some("reset-admin"), Some(email), None) => return prompt_reset_admin(&email),
+        (Some("bootstrap"), None, None) => "bootstrap",
+        (Some("serve"), None, None) => "serve",
+        _ => return Err("Usage: agentlink bootstrap | serve | reset-admin EMAIL".into()),
+    };
+    let path = database_path(true).map_err(|e| e.to_string())?;
+    let mut db = iam::open(&path, true).map_err(|error| error.1)?;
     if command == "bootstrap" {
         return prompt_bootstrap(&mut db);
     }

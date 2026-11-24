@@ -2,6 +2,11 @@
 set -euo pipefail
 umask 077
 
+if (( $# != 0 )) && [[ $# != 2 || "$1" != reset-admin ]]; then
+    echo "Usage: ./setup.sh [reset-admin EMAIL]" >&2
+    exit 1
+fi
+
 if [[ "$(uname -s)" != Linux ]]; then
     echo "AgentLink setup requires Linux." >&2
     exit 1
@@ -20,5 +25,8 @@ export AGENTLINK_STATE_DIR="${AGENTLINK_STATE_DIR:-$PWD/.agentlink}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build --release --locked --jobs "${CARGO_BUILD_JOBS:-2}"
 binary="$CARGO_TARGET_DIR/release/agentlink"
+if (( $# == 2 )); then
+    exec "$binary" reset-admin "$2"
+fi
 "$binary" bootstrap
 exec "$binary" serve

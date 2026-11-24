@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentLink by Annseraf</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="shell bar">
+      <div class="brand">
+        <img src="/annseraf-mark-navy.svg" width="36" height="27" alt="">
+        <span>AgentLink <a href="https://annseraf.com" rel="noreferrer">by Annseraf</a></span>
+      </div>
+      <nav id="navigation" aria-label="Main" hidden>
+        <button class="quiet" data-panel="overview">Overview</button>
+        <button class="quiet" data-panel="people" id="people-link" hidden>People</button>
+        <button class="quiet" data-panel="guide">Guide</button>
+        <button class="quiet" data-panel="account">Account</button>
+      </nav>
+    </div>
+  </header>
+  <main class="shell">
+    <p id="status" role="status">Checking your session…</p>
+    <p id="error" role="alert" hidden></p>
+
+    <section id="login" class="card narrow" hidden>
+      <h1 tabindex="-1">Sign in</h1>
+      <form id="login-form">
+        <label>Email<input type="email" name="email" maxlength="254" autocomplete="username" required></label>
+        <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+        <button>Sign in</button>
+      </form>
+    </section>
+
+    <section id="overview" hidden>
+      <h1 tabindex="-1">Overview</h1>
+      <p id="identity"></p>
+      <div class="card">
+        <h2>Your resources</h2>
+        <p>Bot registration, resource assignments and handoffs are pending in this preview.</p>
+        <button class="quiet" data-panel="guide">Open guide</button>
+      </div>
+    </section>
+
+    <section id="people" hidden>
+      <h1 tabindex="-1">People</h1>
+      <p>Manage who can sign in to this AgentLink installation.</p>
+      <div class="card">
+        <h2>Add a person</h2>
+        <p>Members can sign in. Admins can also manage accounts and sessions.</p>
+        <form id="add-form" class="form-grid">
+          <label>Email<input type="email" name="email" maxlength="254" autocomplete="off" required></label>
+          <label>Role<select name="role"><option value="member">Member</option><option value="admin">Admin</option></select></label>
+          <label>Temporary password<input type="password" name="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+          <button>Add person</button>
+          <p id="add-error" class="form-error" role="alert" hidden></p>
+        </form>
+      </div>
+      <div id="accounts" aria-label="Accounts"></div>
+    </section>
+
+    <section id="guide" class="card narrow" hidden>
+      <h1 tabindex="-1">Guide</h1>
+      <p>AgentLink runs on this machine. Open People to give someone access, then share their temporary password privately. They choose a new password at first sign-in.</p>
+      <p>Use Account to change your password or sign out.</p>
+    </section>
+
+    <section id="account" class="card narrow" hidden>
+      <h1 tabindex="-1">Account</h1>
+      <p id="account-note"></p>
+      <form id="password-form">
+        <label>Current password<input type="password" name="current_password" autocomplete="current-password" required></label>
+        <label>New password<input type="password" name="new_password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+        <button>Change password</button>
+      </form>
+      <button id="sign-out" class="quiet">Sign out</button>
+    </section>
+
+    <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-note">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-note"></p>
+      <form id="confirm-form">
+        <label id="reset-field" hidden>Temporary password<input type="password" name="password" minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <p id="confirm-error" class="form-error" role="alert" hidden></p>
+        <div class="actions">
+          <button id="cancel" type="button" class="quiet" autofocus>Cancel</button>
+          <button id="confirm-button">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+  </main>
+</body>
+</html>

@@ -102,3 +102,8 @@ and billing belong in a separate control plane.
 
 The bundled mark comes from the official
 [Annseraf brand asset](https://annseraf.com/assets/brand/annseraf-mark-navy.svg).
+
+## Adapter development
+
+See the [conversation adapter contract](docs/adapter-sdk.md) and the
+[standalone bridge architecture and provider matrix](docs/bridge-architecture.md).

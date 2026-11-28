@@ -31,9 +31,8 @@ deadlines with `timeout`.
 
 Run `cargo test --locked --test adapter_contract` to exercise wire negotiation,
 text, invalid sizes and reply binding. The fixture has no production adapter
-authentication or delivery side effects. Runtime tests for authenticated
-sender scope, duplicate suppression, timeout, reconnect and retry require the
-engine adapter lifecycle. Native provider conformance and Pi/x86-64 performance
+authentication or delivery side effects. The authenticated pull-worker tests below exercise sender scope, duplicate
+suppression and restart recovery. Native provider conformance and Pi/x86-64 performance
 baselines remain separate acceptance work.
 
 ## Durable ordinary text delivery
@@ -61,5 +60,45 @@ message and does not resolve routes or invoke adapters.
 
 Run `cargo test --locked --test durable_delivery` for file-backed queue
 recovery, backoff, deduplication and reconciliation checks. The queue is an
-engine component. Wiring it to an authenticated adapter lifecycle and choosing
-a retention policy are integration work.
+engine component. Choosing
+a retention policy remains integration work.
+
+### Authenticated pull worker
+
+The local engine serves `POST /api/adapter/text` on its existing loopback
+address. An operator registers an exact destination in
+`AGENTLINK_STATE_DIR/text-adapters.json` (default directory `.agentlink`).
+Supply a JSON array of records shaped like this:
+
+```json
+[{"binding":{"tenant":"dev","adapter":"fixture","room":"one","thread":null},
+  "sender_sha256":"<sender token digest>","worker_sha256":"<worker token digest>"}]
+```
+
+Generate two distinct random 32-byte secrets per registration, encoded as
+64 hex characters. Store the lowercase hex SHA-256 digest of each encoded
+token's ASCII bytes in the file. Give the sender and worker only their own
+token. All requests require `Content-Type: application/json` and
+`Authorization: Bearer TOKEN`. The engine reads the registry on each request.
+Replace it atomically to rotate or revoke access. Missing or invalid JSON and
+ambiguous tokens deny access. Revocation affects subsequent operations.
+A previously claimed payload may already be with its worker.
+
+- The sender posts `{"action":"enqueue","envelope":...}` and receives
+  `{"id":N}`. Identical submissions return the original ID.
+- The worker posts `{"action":"claim"}`. A response of `null` means idle.
+  Otherwise it receives the stored envelope and an `attempt` with `id` and
+  `number`. Deliver only to that envelope's binding, within the lease.
+- Post `{"action":"finish","attempt":...,"outcome":"delivered"}` only after
+  authoritative delivery confirmation. Other outcomes are `retryable`,
+  `rejected` and `unconfirmed`. Connection loss with uncertain delivery
+  requires `unconfirmed`. A lost claim response expires into reconciliation.
+- After claiming (which sweeps expired leases), page through
+  `{"action":"unconfirmed","after_id":0}` using the last returned ID.
+  Post `{"action":"reconcile","attempt":...,"result":"delivered"}` on proof of
+  delivery, or `not_delivered` only on proof that late delivery is impossible.
+  Finish and reconcile return `{"applied":false}` for stale or out-of-scope
+  attempts.
+
+Run `cargo build --locked && python3 tests/adapter_worker.py` for the
+synthetic loopback restart, duplicate, credential and isolation checks.

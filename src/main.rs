@@ -120,6 +120,17 @@ async fn people(State(app): State<App>, headers: HeaderMap) -> iam::Result<Json<
     Ok(Json(app.query(move |db| iam::people(db, &token)).await?))
 }
 
+async fn account_events(
+    State(app): State<App>,
+    headers: HeaderMap,
+) -> iam::Result<Json<Vec<iam::AccountEvent>>> {
+    let token = session(&headers)?;
+    Ok(Json(
+        app.query(move |db| iam::recent_account_events(db, &token))
+            .await?,
+    ))
+}
+
 async fn add_user(
     State(app): State<App>,
     headers: HeaderMap,
@@ -222,6 +233,7 @@ fn router(app: App) -> Router {
         .route("/api/session", get(current_user).post(sign_in))
         .route("/api/session/logout", post(sign_out))
         .route("/api/account/password", post(change_password))
+        .route("/api/admin/account-events", get(account_events))
         .route("/api/people", get(people).post(add_user))
         .route("/api/people/{id}/access", post(change_access))
         .layer(DefaultBodyLimit::max(8192))

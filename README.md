@@ -102,3 +102,13 @@ and billing belong in a separate control plane.
 
 The bundled mark comes from the official
 [Annseraf brand asset](https://annseraf.com/assets/brand/annseraf-mark-navy.svg).
+
+## Adapter development
+
+See the [conversation adapter contract](docs/adapter-sdk.md) and the
+[standalone bridge architecture and provider matrix](docs/bridge-architecture.md).
+
+Administrators can fetch the latest 100 local account audit events from
+`GET /api/admin/account-events` with an active dashboard session after setting
+their password. Results contain event IDs, Unix timestamps, actor and subject
+account IDs, and action names. Audit history remains in local SQLite state.

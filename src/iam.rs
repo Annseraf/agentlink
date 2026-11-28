@@ -325,6 +325,37 @@ pub fn people(db: &Connection, token: &str) -> Result<Vec<User>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
+#[derive(Serialize)]
+pub struct AccountEvent {
+    id: i64,
+    occurred_at: i64,
+    actor_id: i64,
+    subject_id: i64,
+    action: String,
+}
+
+pub fn recent_account_events(db: &mut Connection, token: &str) -> Result<Vec<AccountEvent>> {
+    // Authorization and read use the same SQLite snapshot, including across
+    // concurrent connections to the local state database.
+    let tx = db.transaction()?;
+    admin(&tx, token)?;
+    let mut query = tx.prepare(
+        "SELECT id, occurred_at, actor_id, subject_id, action
+         FROM account_events ORDER BY id DESC LIMIT 100",
+    )?;
+    Ok(query
+        .query_map([], |row| {
+            Ok(AccountEvent {
+                id: row.get(0)?,
+                occurred_at: row.get(1)?,
+                actor_id: row.get(2)?,
+                subject_id: row.get(3)?,
+                action: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn add_user(db: &mut Connection, token: &str, input: NewUser) -> Result<User> {
     let tx = write(db)?;
     let actor = admin(&tx, token)?;

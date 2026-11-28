@@ -1,7 +1,7 @@
 "use strict";
 
 const el = (id) => document.getElementById(id);
-const panels = ["login", "overview", "people", "guide", "account"];
+const panels = ["login", "overview", "people", "cloud", "guide", "account"];
 let user;
 let accessChange;
 
@@ -11,8 +11,10 @@ function notice(id, text = "") {
 }
 
 function show(panel) {
+  if (panel !== "cloud") el("cloud-pair").reset();
   for (const name of panels) el(name).hidden = name !== panel;
   el("navigation").hidden = !user || user.must_change;
+  el("cloud-link").hidden = user?.role !== "admin";
   el("people-link").hidden = user?.role !== "admin";
   for (const button of el("navigation").querySelectorAll("[data-panel]")) {
     if (button.dataset.panel === panel) button.setAttribute("aria-current", "page");
@@ -134,6 +136,32 @@ function form(id, handler, errorTarget = "error") {
   });
 }
 
+let cloudOrigin;
+async function loadCloud() {
+  const { origin, state, hosted } = await api("/api/cloud");
+  cloudOrigin = origin;
+  el("cloud-status").textContent = `${origin || "Cloud origin is not configured"} · ${state} · Hosted features ${hosted ? "available" : "off"}`;
+  const canPair = ["unpaired", "pairing denied", "revoked"].includes(state);
+  el("cloud-pair").hidden = !origin || !canPair;
+  el("cloud-help").hidden = state === "unpaired";
+  el("cloud-disconnect").hidden = state === "unpaired";
+}
+form("cloud-pair", async ({ name, proof, consent }, form) => {
+  try {
+    await api("/api/cloud/pair", { origin: cloudOrigin, name, proof, consent: consent === "on" });
+  } finally {
+    form.reset();
+  }
+  await loadCloud();
+});
+el("cloud-refresh").addEventListener("click", () => loadCloud().catch(report));
+el("cloud-disconnect").addEventListener("click", async () => {
+  try {
+    await api("/api/cloud/disconnect", {});
+    await loadCloud();
+  } catch (error) { report(error); }
+});
+
 form("login-form", async (data, form) => {
   try { await api("/api/session", data); }
   finally { form.elements.password.value = ""; }
@@ -186,6 +214,7 @@ for (const button of document.querySelectorAll("[data-panel]")) {
     notice("status");
     notice("error");
     try {
+      if (button.dataset.panel === "cloud") await loadCloud();
       if (button.dataset.panel === "people") await loadPeople();
       show(button.dataset.panel);
     } catch (error) {

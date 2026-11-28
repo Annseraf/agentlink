@@ -261,7 +261,7 @@ pub fn current_user(db: &Connection, token: &str) -> Result<User> {
     .ok_or(UNAUTHORIZED)
 }
 
-fn admin(db: &Connection, token: &str) -> Result<User> {
+pub(crate) fn admin(db: &Connection, token: &str) -> Result<User> {
     let user = current_user(db, token)?;
     if user.role != Role::Admin {
         return Err(FORBIDDEN);

@@ -17,6 +17,7 @@
       <nav id="navigation" aria-label="Main" hidden>
         <button class="quiet" data-panel="overview">Overview</button>
         <button class="quiet" data-panel="people" id="people-link" hidden>People</button>
+        <button class="quiet" data-panel="cloud" id="cloud-link" hidden>Cloud</button>
         <button class="quiet" data-panel="guide">Guide</button>
         <button class="quiet" data-panel="account">Account</button>
       </nav>
@@ -60,6 +61,20 @@
         </form>
       </div>
       <div id="accounts" aria-label="Accounts"></div>
+    </section>
+
+    <section id="cloud" class="card narrow" hidden>
+      <h1 tabindex="-1">Cloud enrollment</h1>
+      <p id="cloud-status" role="status"></p>
+      <button class="quiet" id="cloud-refresh">Refresh status</button>
+      <form id="cloud-pair" hidden>
+        <label>Installation name<input name="name" maxlength="100" required></label>
+        <label>Workspace proof<input type="password" name="proof" autocomplete="off" pattern="[0-9a-f]{64}" required></label>
+        <label><input type="checkbox" name="consent" required> I authorize pairing this installation with the Cloud origin shown above.</label>
+        <button>Pair installation</button>
+      </form>
+      <p id="cloud-help" hidden>Disconnect clears the local credential. Revoke the installation in its Cloud workspace before pairing it again.</p>
+      <button class="quiet" id="cloud-disconnect" hidden>Disconnect this installation</button>
     </section>
 
     <section id="guide" class="card narrow" hidden>

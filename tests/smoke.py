@@ -176,7 +176,9 @@ def exercise(port, state):
         request(port, "/healthz", 403, headers={"Host": "example.invalid"})
         request(port, "/api/session", 403, data={}, headers={"Origin": "https://example.invalid"})
         request(port, "/api/session/logout", 415, data={}, headers={"Content-Type": "text/plain"})
+        request(port, "/api/admin/account-events", 401)
         admin = login(port, ADMIN, initial)
+        request(port, "/api/admin/account-events", 403, cookie=admin)
         request(port, "/api/people", 403, cookie=admin)
         change_password(port, admin, initial, admin_password)
         login(port, ADMIN, initial, 401)
@@ -194,6 +196,20 @@ def exercise(port, state):
         request(port, "/api/session", 401, cookie=signed_out)
         member_cookie = login(port, MEMBER, member_password)
         request(port, "/api/people", 403, cookie=member_cookie)
+        request(port, "/api/admin/account-events", 403, cookie=member_cookie)
+        _, _, body = request(port, "/api/admin/account-events", 200, cookie=admin)
+        events = json.loads(body)
+        assert events
+        assert all(
+            set(event) == {"id", "occurred_at", "actor_id", "subject_id", "action"}
+            for event in events
+        )
+        assert any(
+            event["actor_id"] == primary["id"]
+            and event["subject_id"] == member["id"]
+            and event["action"] == "add_user"
+            for event in events
+        )
         add(port, member_cookie, "blocked@example.invalid", member_initial, "admin", 403)
         access(port, member_cookie, primary, "disable", 403)
         access(port, member_cookie, primary, "enable", 403, password=member_initial)

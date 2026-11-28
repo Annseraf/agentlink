@@ -74,7 +74,8 @@ def tls_fixture(folder):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
             "-keyout", "ca.key", "-out", "ca.pem", "-subj", "/CN=Fixture CA",
-            "-addext", "basicConstraints=critical,CA:TRUE")
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", "peer.key",
             "-out", "peer.csr", "-subj", "/CN=localhost")
     (folder / "extensions").write_text("subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n")

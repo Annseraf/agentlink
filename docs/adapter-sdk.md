@@ -35,3 +35,31 @@ authentication or delivery side effects. Runtime tests for authenticated
 sender scope, duplicate suppression, timeout, reconnect and retry require the
 engine adapter lifecycle. Native provider conformance and Pi/x86-64 performance
 baselines remain separate acceptance work.
+
+## Durable ordinary text delivery
+
+The engine library provides a SQLite queue in `agentlink::delivery`. A trusted
+worker must authorize the resolved destination before enqueuing and recheck
+authorization before dispatch. The queue stores that destination with the
+message and does not resolve routes or invoke adapters.
+
+- Enqueue commits before returning the delivery ID. Reusing the same tenant,
+  adapter and correlation ID with identical text and binding returns the
+  original ID. Changing the text or destination under that key is a conflict.
+- Claim atomically leases the earliest due row, using the delivery ID to break
+  ties. Workers use Unix timestamps in seconds and a delivery deadline shorter
+  than the 60-second lease. The lease does not cancel adapter work.
+- A definite retryable failure waits five seconds after attempt one and ten
+  seconds after attempt two. Three attempts exhaust the budget. Rejected and
+  exhausted messages become dead letters. Terminal rows retain their
+  deduplication keys.
+- An ambiguous result or expired lease requires reconciliation. The worker
+  checks the stored binding and correlation ID with the adapter. Only a
+  definitive result that rules out both past and late delivery permits retry.
+  Without an authoritative result, the row stays unconfirmed. A confirmed
+  delivery is terminal. Stale completions cannot resolve a newer attempt.
+
+Run `cargo test --locked --test durable_delivery` for file-backed queue
+recovery, backoff, deduplication and reconciliation checks. The queue is an
+engine component. Wiring it to an authenticated adapter lifecycle and choosing
+a retention policy are integration work.

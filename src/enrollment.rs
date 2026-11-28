@@ -187,15 +187,25 @@ pub async fn pair(
 
 pub async fn disconnect(State(app): State<App>, headers: HeaderMap) -> iam::Result<StatusCode> {
     let token = session(&headers)?;
-    app.query(move |db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let actor=iam::admin(&tx,&token)?;
-        let changed=tx.execute("UPDATE cloud_pair SET credential=NULL,proof=NULL,engine=NULL,origin=NULL,
-            name=NULL,state='unpaired',hosted=0,expires=0,revision=revision+1 WHERE slot=1 AND state!='unpaired'",[])?;
-        if changed>0 { tx.execute("INSERT INTO cloud_events(actor,event) VALUES(?1,'disconnect')",[actor.id])?; }
+    app.query(move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let actor = iam::admin(&tx, &token)?;
+        let changed = tx.execute(
+            "UPDATE cloud_pair SET credential=NULL, proof=NULL, engine=NULL, origin=NULL,
+                name=NULL, state='unpaired', hosted=0, expires=0, revision=revision+1
+             WHERE slot=1 AND state!='unpaired'",
+            [],
+        )?;
+        if changed > 0 {
+            tx.execute(
+                "INSERT INTO cloud_events(actor,event) VALUES(?1,'disconnect')",
+                [actor.id],
+            )?;
+        }
         tx.commit()?;
         Ok(StatusCode::NO_CONTENT)
-    }).await
+    })
+    .await
 }
 
 struct Work {
@@ -302,36 +312,72 @@ async fn step(app: &App, cloud: &Cloud) -> iam::Result<()> {
         // The original claim may have committed before its response was lost.
         update = cloud.exchange(&w, false).await;
     }
-    app.query(move |db| {
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let previous:Option<String>=tx.query_row("SELECT state FROM cloud_pair WHERE slot=1 AND revision=?1",[w.revision],|r|r.get(0)).optional()?;
-        let Some(previous)=previous else{return Ok(())};
-        let mut state="invalid response";
-        match update {
-            Update::Valid(e)=>{
-                let until:Option<i64>=tx.query_row("SELECT unixepoch(?1) WHERE ?1 GLOB '????-??-??T??:??:??*Z'
-                    AND unixepoch(?1)>unixepoch() AND unixepoch(?1)<=unixepoch()+300",[e.valid_until],|r|r.get(0)).optional()?;
-                if let Some(until)=until {
-                    tx.execute("UPDATE cloud_pair SET engine=?1,proof=NULL,hosted=?2,expires=?3,attempts=0,
-                        due=MAX(unixepoch()+1,?3-60) WHERE slot=1",params![e.engine_id,e.hosted,until])?;
-                    state="connected";
-                }
-            }
-            Update::Failed(reason)=>state=reason,
-            Update::Denied=>{
-                state=if w.proof.is_some() {"pairing denied"} else {"revoked"};
-                tx.execute("UPDATE cloud_pair SET credential=NULL,proof=NULL WHERE slot=1",[])?;
+    app.query(move |db| save_result(db, w, update)).await
+}
+
+fn save_result(db: &mut Connection, work: Work, update: Update) -> iam::Result<()> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT state FROM cloud_pair WHERE slot=1 AND revision=?1",
+            [work.revision],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // Disconnect or a newer claim invalidates every in-flight result.
+    let Some(previous) = previous else {
+        return Ok(());
+    };
+    let state = match update {
+        Update::Valid(entitlement) => {
+            let until: Option<i64> = tx
+                .query_row(
+                    "SELECT unixepoch(?1) WHERE ?1 GLOB '????-??-??T??:??:??*Z'
+                 AND unixepoch(?1)>unixepoch() AND unixepoch(?1)<=unixepoch()+300",
+                    [entitlement.valid_until],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(until) = until {
+                tx.execute(
+                    "UPDATE cloud_pair SET engine=?1, proof=NULL, hosted=?2, expires=?3, attempts=0,
+                     due=MAX(unixepoch()+1,?3-60) WHERE slot=1",
+                    params![entitlement.engine_id, entitlement.hosted, until]
+                )?;
+                "connected"
+            } else {
+                "invalid response"
             }
         }
-        if state!="connected" {
-            tx.execute("UPDATE cloud_pair SET hosted=0,expires=0,attempts=MIN(6,attempts+1),
-                due=unixepoch()+MIN(120,2 << attempts) WHERE slot=1",[])?;
+        Update::Failed(reason) => reason,
+        Update::Denied => {
+            tx.execute(
+                "UPDATE cloud_pair SET credential=NULL, proof=NULL WHERE slot=1",
+                [],
+            )?;
+            if work.proof.is_some() {
+                "pairing denied"
+            } else {
+                "revoked"
+            }
         }
-        tx.execute("UPDATE cloud_pair SET state=?1,revision=revision+1 WHERE slot=1",[state])?;
-        if previous!=state {tx.execute("INSERT INTO cloud_events(event) VALUES(?1)",[state])?;}
-        tx.commit()?;
-        Ok(())
-    }).await
+    };
+    if state != "connected" {
+        tx.execute(
+            "UPDATE cloud_pair SET hosted=0, expires=0, attempts=MIN(6,attempts+1),
+             due=unixepoch()+MIN(120,2 << attempts) WHERE slot=1",
+            [],
+        )?;
+    }
+    tx.execute(
+        "UPDATE cloud_pair SET state=?1, revision=revision+1 WHERE slot=1",
+        [state],
+    )?;
+    if previous != state {
+        tx.execute("INSERT INTO cloud_events(event) VALUES(?1)", [state])?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 pub async fn worker(app: App) {

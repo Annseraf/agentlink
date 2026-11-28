@@ -25,6 +25,10 @@ class Peer(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        if self.path == "/unexpected-destination":
+            self.server.followed_redirect = True
+            self.send_error(400)
+            return
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         cloud = self.server
         installation = data["installation"]
@@ -76,6 +80,7 @@ def tls_fixture(folder):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(folder / "peer.pem", folder / "peer.key")
     cloud.socket = ctx.wrap_socket(cloud.socket, server_side=True)
+    cloud.followed_redirect = False
     cloud.mode, cloud.claim = "offline", None
     cloud.proof, cloud.engine = secrets.token_hex(32), secrets.token_hex(32)
     threading.Thread(target=cloud.serve_forever, daemon=True).start()
@@ -172,6 +177,10 @@ def exercise(folder, binary):
         cloud.mode = "incompatible"
         due()
         expect("incompatible")
+        cloud.mode = "redirect"
+        due()
+        expect("offline")
+        assert not cloud.followed_redirect
         cloud.mode = "ok"
         due()
         expect("connected", hosted=True)

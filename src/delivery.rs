@@ -25,19 +25,21 @@ impl From<rusqlite::Error> for QueueError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Attempt {
     id: i64,
     number: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Delivery {
     pub attempt: Attempt,
     pub envelope: TextEnvelope,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Delivered,
     /// The adapter definitively did not deliver, and retry may succeed.
@@ -46,7 +48,8 @@ pub enum Outcome {
     Unconfirmed,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reconciliation {
     Delivered,
     /// Authoritative confirmation that this attempt did not deliver and cannot
@@ -54,7 +57,7 @@ pub enum Reconciliation {
     NotDelivered,
 }
 
-pub struct Queue(Connection);
+pub struct Queue(Connection, Option<Binding>);
 
 impl Queue {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, QueueError> {
@@ -81,13 +84,39 @@ impl Queue {
             CREATE INDEX IF NOT EXISTS ordinary_deliveries_lease
                 ON ordinary_deliveries(state, lease_until);",
         )?;
-        Ok(Self(db))
+        Ok(Self(db, None))
+    }
+
+    /// Restrict every operation on this connection to one registered destination.
+    pub fn scoped(path: impl AsRef<Path>, binding: Binding) -> Result<Self, QueueError> {
+        let mut queue = Self::open(path)?;
+        queue.1 = Some(binding);
+        Ok(queue)
+    }
+
+    fn scope(&self) -> [Option<&str>; 4] {
+        match &self.1 {
+            Some(b) => [
+                Some(&b.tenant),
+                Some(&b.adapter),
+                Some(&b.room),
+                b.thread.as_deref(),
+            ],
+            None => [None; 4],
+        }
     }
 
     /// Returns the same ID for identical submissions, even after completion.
     /// The key belongs to the tenant and adapter and cannot be reused to change
     /// a destination or payload.
     pub fn enqueue(&mut self, envelope: &TextEnvelope, now: u64) -> Result<i64, QueueError> {
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|scope| scope != &envelope.binding)
+        {
+            return Err(QueueError::InvalidEnvelope(ContractError::BindingMismatch));
+        }
         envelope.validate().map_err(QueueError::InvalidEnvelope)?;
         let now = timestamp(now)?;
         let binding = &envelope.binding;
@@ -133,14 +162,16 @@ impl Queue {
     /// Atomically leases the earliest eligible row. Expired attempts move to
     /// reconciliation because a worker may have sent before it disappeared.
     pub fn claim(&mut self, now: u64) -> Result<Option<Delivery>, QueueError> {
+        let [tenant, adapter, room, thread] = self.scope().map(|s| s.map(str::to_owned));
         let now = timestamp(now)?;
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             "UPDATE ordinary_deliveries SET state = 'unconfirmed', lease_until = NULL
-             WHERE state = 'in_flight' AND lease_until <= ?1",
-            [now],
+             WHERE state = 'in_flight' AND lease_until <= ?1
+             AND (?2 IS NULL OR (tenant=?2 AND adapter=?3 AND room=?4 AND thread IS ?5))",
+            params![now, tenant, adapter, room, thread],
         )?;
         let delivery = tx
             .query_row(
@@ -148,10 +179,18 @@ impl Queue {
              SET state = 'in_flight', attempts = attempts + 1, lease_until = ?2
              WHERE id = (
                 SELECT id FROM ordinary_deliveries WHERE state = 'queued' AND due_at <= ?1
+                AND (?3 IS NULL OR (tenant=?3 AND adapter=?4 AND room=?5 AND thread IS ?6))
                 ORDER BY due_at, id LIMIT 1
              )
              RETURNING id, attempts, tenant, adapter, correlation_id, room, thread, body",
-                params![now, now + LEASE_SECONDS as i64],
+                params![
+                    now,
+                    now + LEASE_SECONDS as i64,
+                    tenant,
+                    adapter,
+                    room,
+                    thread
+                ],
                 read_delivery,
             )
             .optional()?;
@@ -171,12 +210,17 @@ impl Queue {
     }
 
     fn list(&self, state: &str, after_id: i64) -> Result<Vec<Delivery>, QueueError> {
+        let [tenant, adapter, room, thread] = self.scope();
         let mut statement = self.0.prepare(
             "SELECT id, attempts, tenant, adapter, correlation_id, room, thread, body
              FROM ordinary_deliveries WHERE state = ?1 AND id > ?2
+             AND (?3 IS NULL OR (tenant=?3 AND adapter=?4 AND room=?5 AND thread IS ?6))
              ORDER BY id LIMIT 100",
         )?;
-        let deliveries = statement.query_map(params![state, after_id], read_delivery)?;
+        let deliveries = statement.query_map(
+            params![state, after_id, tenant, adapter, room, thread],
+            read_delivery,
+        )?;
         Ok(deliveries.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -206,6 +250,9 @@ impl Queue {
         now: u64,
     ) -> Result<bool, QueueError> {
         let now = timestamp(now)?;
+        if !(1..=MAX_ATTEMPTS).contains(&attempt.number) {
+            return Ok(false);
+        }
         let (state, due_at) = match outcome {
             Outcome::Delivered => ("delivered", now),
             Outcome::Rejected => ("dead", now),
@@ -216,11 +263,24 @@ impl Queue {
                 ("queued", now + delay as i64)
             }
         };
+        let [tenant, adapter, room, thread] = self.scope();
         Ok(self.0.execute(
             "UPDATE ordinary_deliveries SET state = ?1, due_at = ?2, lease_until = NULL
              WHERE id = ?3 AND attempts = ?4 AND state = ?5
-               AND (lease_until IS NULL OR lease_until > ?6)",
-            params![state, due_at, attempt.id, attempt.number, expected, now],
+               AND (lease_until IS NULL OR lease_until > ?6)
+               AND (?7 IS NULL OR (tenant=?7 AND adapter=?8 AND room=?9 AND thread IS ?10))",
+            params![
+                state,
+                due_at,
+                attempt.id,
+                attempt.number,
+                expected,
+                now,
+                tenant,
+                adapter,
+                room,
+                thread
+            ],
         )? == 1)
     }
 }

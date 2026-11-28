@@ -1,4 +1,5 @@
 mod iam;
+mod worker;
 
 use axum::{
     Json, Router,
@@ -23,6 +24,7 @@ const COOKIE: &str = "agentlink_session";
 
 #[derive(Clone)]
 struct App {
+    db_path: Arc<PathBuf>,
     db: Arc<Mutex<Connection>>,
     dummy_hash: Arc<str>,
     authority: Arc<str>,
@@ -237,6 +239,10 @@ fn router(app: App) -> Router {
         .route("/api/people", get(people).post(add_user))
         .route("/api/people/{id}/access", post(change_access))
         .layer(DefaultBodyLimit::max(8192))
+        .route(
+            "/api/adapter/text",
+            post(worker::handle).layer(DefaultBodyLimit::max(128 * 1024)),
+        )
         .layer(middleware::from_fn_with_state(app.clone(), local_only))
         .with_state(app)
 }
@@ -367,6 +373,7 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("Cannot bind {address}: {e}"))?;
     let app = App {
+        db_path: Arc::new(path),
         authority: address.to_string().into(),
         dummy_hash: iam::dummy_hash().map_err(|error| error.1)?.into(),
         db: Arc::new(Mutex::new(db)),

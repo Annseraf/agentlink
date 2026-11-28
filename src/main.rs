@@ -1,3 +1,4 @@
+mod enrollment;
 mod iam;
 
 use axum::{
@@ -27,6 +28,7 @@ struct App {
     dummy_hash: Arc<str>,
     authority: Arc<str>,
     slots: Arc<Semaphore>,
+    cloud: Option<Arc<enrollment::Cloud>>,
 }
 
 impl IntoResponse for iam::Error {
@@ -218,6 +220,9 @@ fn router(app: App) -> Router {
                 )
             }),
         )
+        .route("/api/cloud", get(enrollment::status))
+        .route("/api/cloud/pair", post(enrollment::pair))
+        .route("/api/cloud/disconnect", post(enrollment::disconnect))
         .route("/healthz", get(|| async { "ok\n" }))
         .route("/api/session", get(current_user).post(sign_in))
         .route("/api/session/logout", post(sign_out))
@@ -354,12 +359,17 @@ async fn run() -> Result<(), String> {
     let listener = TcpListener::bind(address)
         .await
         .map_err(|e| format!("Cannot bind {address}: {e}"))?;
+    enrollment::initialize(&db).map_err(|_| "Cannot initialize local enrollment state.")?;
     let app = App {
+        cloud: enrollment::Cloud::configured().map(Arc::new),
         authority: address.to_string().into(),
         dummy_hash: iam::dummy_hash().map_err(|error| error.1)?.into(),
         db: Arc::new(Mutex::new(db)),
         slots: Arc::new(Semaphore::new(8)),
     };
+    if app.cloud.is_some() {
+        tokio::spawn(enrollment::worker(app.clone()));
+    }
     println!("AgentLink by Annseraf listening at http://{address}/");
     axum::serve(listener, router(app))
         .await

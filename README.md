@@ -102,3 +102,31 @@ and billing belong in a separate control plane.
 
 The bundled mark comes from the official
 [Annseraf brand asset](https://annseraf.com/assets/brand/annseraf-mark-navy.svg).
+
+## Optional Cloud enrollment
+
+Set `AGENTLINK_CLOUD_ORIGIN` to the owner's HTTPS Cloud origin before running
+setup. Use `AGENTLINK_CLOUD_CA` only for an operator-vetted private CA PEM.
+The engine accepts a bare origin and disables redirects and proxy discovery.
+In the local dashboard, sign in as an administrator, change any temporary
+password, open **Cloud**, verify the displayed origin, enter the workspace's
+single-use proof and installation name, and confirm consent. **Refresh status**
+shows the latest outcome. Pre-purchase installations can pair.
+
+The engine saves a random installation ID and a separate random credential in
+the private local SQLite database before sending the first claim. Protect its
+0700 state directory and encrypt backups that include this database. Pending
+claims retry after restart with the same values. Success deletes the proof.
+Only the installation identifier, name, proof, and dedicated enrollment
+credential go to the configured Cloud endpoint. Refresh uses bearer auth.
+Requests have a three-second connection deadline and an eight-second total
+deadline. Failures disable hosted access and retry with backoff capped at two
+minutes. An expired entitlement, changed origin, or incompatible response
+also disables hosted access. Local sign-in, accounts, and dashboard keep working.
+
+Use **Disconnect this installation** to remove the local proof and credential,
+including while offline. The Cloud owner separately revokes the registration
+in its workspace. A denied refresh clears the engine credential. To rotate or
+re-pair, revoke in Cloud, disconnect locally, then use a fresh proof from the
+same workspace. The stable installation ID survives. Consent, disconnect and
+state transitions are recorded as metadata in the local `cloud_events` table.

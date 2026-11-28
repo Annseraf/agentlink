@@ -267,7 +267,7 @@ impl Cloud {
                     bytes.extend_from_slice(&chunk)
                 }
                 Ok(None) => break,
-                _ => return Update::Failed("invalid response"),
+                _ => return Update::Failed("invalid response body"),
             }
         }
         match serde_json::from_slice::<Entitlement>(&bytes) {
@@ -346,7 +346,7 @@ fn save_result(db: &mut Connection, work: Work, update: Update) -> iam::Result<(
                 )?;
                 "connected"
             } else {
-                "invalid response"
+                "invalid entitlement expiry"
             }
         }
         Update::Failed(reason) => reason,

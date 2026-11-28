@@ -55,12 +55,16 @@ class Peer(BaseHTTPRequestHandler):
             self.end_headers()
             return
         code = {"offline": 503, "denied": 403, "incompatible": 422}.get(cloud.mode, 200)
-        self.send_response(code)
-        self.end_headers()
+        body = b""
         if code == 200:
             expires = datetime.now(timezone.utc) + timedelta(seconds=295)
-            self.wfile.write(json.dumps({"version": 1, "engine_id": cloud.engine,
-                "hosted": True, "valid_until": expires.strftime("%Y-%m-%dT%H:%M:%SZ")}).encode())
+            body = json.dumps({"version": 1, "engine_id": cloud.engine,
+                "hosted": True, "valid_until": expires.strftime("%Y-%m-%dT%H:%M:%SZ")}).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def tls_fixture(folder):
